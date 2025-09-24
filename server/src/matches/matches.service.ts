@@ -55,28 +55,26 @@ Question: "${question}"
   // ---------- Node 2: Memory Retriever ----------
   async retrieveMemory(userId: string): Promise<string | null> {
     try {
-      // Prefer stored summary if available
       const summary = await this.convService.getSummary(userId);
       if (summary) return summary;
 
-      // else build short recent history string (latest 10)
-      const recent = await this.convService.getRecent(userId, 10);
+      const recent = await this.convService.getRecent(userId, 1);
       if (!recent || recent.length === 0) return null;
-      const text = recent
-        .slice()
-        .reverse()
-        .map((r) => `Q: ${r.question}\nA: ${r.answer}`)
+
+      // take latest conversation's messages
+      const messages = recent[0].messages || [];
+      const text = messages
+        .map((m) => `${m.role === 'user' ? 'Q' : 'A'}: ${m.text}`)
         .join('\n---\n');
-      // optionally summarize if > few items
-      if (recent.length > 6) {
+
+      if (messages.length > 6) {
         const prompt = `
 Summarize the following recent conversation into 3 concise facts that are relevant for answering future cricket questions:
 ${text}
 Return only the short summary lines.
-        `.trim();
+      `.trim();
         try {
-          const s = (await this.gemini.ask(prompt)).trim();
-          return s;
+          return (await this.gemini.ask(prompt)).trim();
         } catch (err) {
           this.logger.warn('Gemini summarizer failed, using raw history', err);
           return text;
@@ -382,6 +380,7 @@ No markdown, no tables, just plain text.
   }
 
   // ---------- Node 6 & 7: Full workflow ----------
+  // ---------- Node 6 & 7: Full workflow ----------
   async answerQuestion(question: string, userId: string, formatHint?: string) {
     const relevant = await this.relevancyCheck(question);
     if (!relevant) {
@@ -405,23 +404,26 @@ No markdown, no tables, just plain text.
     const results = await this.executeMongoQuery(genQuery);
     const answer = await this.formatAnswer(question, results);
 
-    // Save to conversation storage (store the final human readable text)
-    // Save to conversation storage (store the final human readable text)
-  let answerText: string;
-let columns: string[] = [];
-let rows: string[][] = [];
-
-if (answer.type === 'text') {
-  answerText = answer.text ?? 'No answer';
-} else {
-  answerText = answer.text ?? 'Table response';
-  columns = answer.columns ?? [];
-  rows = answer.rows ?? [];
-}
-
     try {
+      // 🔹 Save user question as a message
+      await this.convService.saveConversation(userId, 'user', question);
 
-await this.convService.saveConversation(userId, question, answerText, columns, rows);
+      // 🔹 Save assistant answer (text or table)
+      if (answer.type === 'text') {
+        await this.convService.saveConversation(
+          userId,
+          'assistant',
+          answer.text ?? 'No answer',
+        );
+      } else {
+        await this.convService.saveConversation(
+          userId,
+          'assistant',
+          answer.text ?? 'Table response',
+          answer.columns,
+          answer.rows,
+        );
+      }
     } catch (err) {
       this.logger.error('Failed to save conversation', err);
     }

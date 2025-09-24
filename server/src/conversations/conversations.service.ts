@@ -19,38 +19,52 @@ export class ConversationsService {
   ) {}
 
   async getRecent(userId: string, limit = 50) {
-    return this.convModel.find({ userId }).sort({ createdAt: -1 }).limit(limit).lean().exec();
+    return this.convModel
+      .find({ userId })
+      .sort({ updatedAt: -1 })
+      .limit(limit)
+      .lean()
+      .exec();
   }
 
-async saveConversation(
-  userId: string,
-  question: string,
-  answer: string,
-  columns?: string[],
-  rows?: string[][],
-) {
-  const doc = await this.convModel.create({
-    userId,
-    question,
-    answer,
-    columns,
-    rows,
-    timestamp: new Date(),
-  });
-  await this.maybeSummarize(userId);
-  return doc;
-}
+  async saveConversation(
+    userId: string,
+    role: 'user' | 'assistant',
+    text: string,
+    columns?: string[],
+    rows?: string[][],
+  ) {
+    let conv = await this.convModel
+      .findOne({ userId })
+      .sort({ updatedAt: -1 })
+      .exec();
 
+    if (!conv) {
+      conv = new this.convModel({ userId, messages: [] });
+    }
+
+    conv.messages.push({ role, text, columns, rows, timestamp: new Date() });
+    conv.updatedAt = new Date();
+    await conv.save();
+
+    await this.maybeSummarize(userId);
+    return conv;
+  }
 
   async maybeSummarize(userId: string) {
-    const count = await this.convModel.countDocuments({ userId });
-    if (count < this.SUMMARY_THRESHOLD) return;
+    const conv = await this.convModel
+      .findOne({ userId })
+      .sort({ updatedAt: -1 })
+      .lean()
+      .exec();
 
-    // Build a text blob of the last N messages
-    const items = await this.convModel.find({ userId }).sort({ createdAt: -1 }).limit(this.SUMMARY_THRESHOLD).lean().exec();
+    if (!conv || !conv.messages || conv.messages.length < this.SUMMARY_THRESHOLD) {
+      return;
+    }
+
+    const items = conv.messages.slice(-this.SUMMARY_THRESHOLD);
     const blob = items
-      .reverse()
-      .map(i => `Q: ${i.question}\nA: ${i.answer}`)
+      .map((m) => `${m.role === 'user' ? 'Q' : 'A'}: ${m.text}`)
       .join('\n---\n');
 
     const prompt = `
@@ -63,12 +77,25 @@ Return only the short summary text.
 
     try {
       const summaryText = (await this.gemini.ask(prompt)).trim();
-      // upsert summary
-      await this.summaryModel.findOneAndUpdate({ userId }, { summary: summaryText, updatedAt: new Date() }, { upsert: true }).exec();
-      // prune older messages to keep DB small
-      const toKeep = this.MAX_ITEMS;
-      const idsToKeepDocs = await this.convModel.find({ userId }).sort({ createdAt: -1 }).limit(toKeep).select('_id').lean().exec();
-      const idsToKeep = idsToKeepDocs.map(d => d._id);
+
+      await this.summaryModel
+        .findOneAndUpdate(
+          { userId },
+          { summary: summaryText, updatedAt: new Date() },
+          { upsert: true },
+        )
+        .exec();
+
+      // prune old conversations
+      const docs = await this.convModel
+        .find({ userId })
+        .sort({ updatedAt: -1 })
+        .limit(this.MAX_ITEMS)
+        .select('_id')
+        .lean()
+        .exec();
+
+      const idsToKeep = docs.map((d) => d._id);
       await this.convModel.deleteMany({ userId, _id: { $nin: idsToKeep } }).exec();
     } catch (err) {
       this.logger.error('Failed to summarize conversation', err);

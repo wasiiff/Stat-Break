@@ -10,16 +10,30 @@ export class HistoryController {
   @UseGuards(AuthGuard('jwt'))
   @Get('history/:userId')
   async getHistory(@Param('userId') userId: string, @Request() req: any) {
-    if (req.user.userId !== userId) return { error: 'forbidden' };
-    const recent = await this.convService.getRecent(userId, 100);
-    return { history: recent };
+    // Normalize user id from token (support sub or userId)
+    const requesterId = req.user?.userId ?? req.user?.sub;
+
+    // If client accidentally sends the string 'undefined' or nothing, fall back to requester
+    const targetUserId = !userId || userId === 'undefined' ? requesterId : userId;
+
+    if (!requesterId) return { error: 'unauthenticated' };
+    if (requesterId !== targetUserId) return { error: 'forbidden' };
+
+    const conversations = await this.convService.getRecent(targetUserId, 20);
+    return { conversations };
   }
+
 
   @UseGuards(AuthGuard('jwt'))
   @Get('summary/:userId')
   async getSummary(@Param('userId') userId: string, @Request() req: any) {
-    if (req.user.userId !== userId) return { error: 'forbidden' };
-    const summary = await this.convService.getSummary(userId);
+    const requesterId = req.user?.userId ?? req.user?.sub;
+    const targetUserId = !userId || userId === 'undefined' ? requesterId : userId;
+
+    if (!requesterId) return { error: 'unauthenticated' };
+    if (requesterId !== targetUserId) return { error: 'forbidden' };
+
+    const summary = await this.convService.getSummary(targetUserId);
     return { summary };
   }
 }

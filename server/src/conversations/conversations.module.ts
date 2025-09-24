@@ -6,6 +6,7 @@ import { Summary, SummarySchema } from '../summarize/schemas/summary.schema';
 import { ConversationsService } from './conversations.service';
 import { GeminiModule } from '../gemini/gemini.module';
 import { SummariesModule } from '../summarize/summarize.module';
+import { ConversationsController } from './conversations.controller';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { SummariesModule } from '../summarize/summarize.module';
     GeminiModule,
     SummariesModule,
   ],
+  controllers: [ConversationsController],
   providers: [ConversationsService],
   exports: [ConversationsService],
 })

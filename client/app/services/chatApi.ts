@@ -20,13 +20,13 @@ export const chatApi = createApi({
       { question: string; format?: "test" | "odi" | "t20" | "all" }
     >({
       query: ({ question, format }) => ({
-        url: "/matches/ask", // ✅ corrected
+        url: "/matches/ask",
         method: "POST",
         body: { question, format },
       }),
     }),
     getHistory: builder.query<any, string>({
-      query: (userId) => `/matches/history/${userId}`, // ✅ corrected
+      query: (userId) => `/user/history/${userId}`,
     }),
   }),
 });

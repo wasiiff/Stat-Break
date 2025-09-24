@@ -9,7 +9,6 @@ export interface ChatMessagesProps {
   formatCellValue: (value: unknown) => string;
 }
 
-
 export default function ChatMessages({
   history,
   isLoading,
@@ -17,17 +16,18 @@ export default function ChatMessages({
   formatCellValue,
 }: ChatMessagesProps) {
   const renderMessage = (m: Message, i: number) => {
-    if (m.role === "user" && typeof m.payload === "string") {
+    if (m.role === "user" && typeof m.payload === "object" && m.payload.type === "text") {
       return (
         <div key={i} className="flex justify-end mb-4">
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-6 py-3 rounded-3xl max-w-xs lg:max-w-2xl shadow-lg">
-            <p className="text-sm font-medium">{m.payload}</p>
+            <p className="text-sm font-medium">{m.payload.text}</p>
           </div>
         </div>
       );
     }
 
-    if (typeof m.payload === "object" && m.payload.type === "text") {
+    // 🟣 Assistant text reply (left side)
+    if (m.role === "assistant" && typeof m.payload === "object" && m.payload.type === "text") {
       return (
         <div key={i} className="flex justify-start mb-4">
           <div className="bg-white text-gray-800 px-6 py-4 rounded-3xl shadow-md border border-gray-100 max-w-xs lg:max-w-2xl">
@@ -37,7 +37,8 @@ export default function ChatMessages({
       );
     }
 
-    if (typeof m.payload === "object" && m.payload.type === "table") {
+    // 🟣 Assistant table reply (left side)
+    if (m.role === "assistant" && typeof m.payload === "object" && m.payload.type === "table") {
       const filteredColumns = m.payload.columns.filter(
         (c) => c && c.toLowerCase() !== "_id" && !c.toLowerCase().startsWith("unnamed")
       );
@@ -48,7 +49,9 @@ export default function ChatMessages({
         )
         .filter((i) => i !== null) as number[];
 
-      const filteredRows = m.payload.rows.map((row) => columnIndexes.map((i) => row[i]));
+      const filteredRows = m.payload.rows.map((row) =>
+        columnIndexes.map((i) => row[i])
+      );
 
       return (
         <div key={i} className="flex justify-start mb-4">
@@ -129,10 +132,18 @@ export default function ChatMessages({
               <div className="flex items-center space-x-2">
                 <div className="flex space-x-1">
                   <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></div>
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></div>
+                  <div
+                    className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                    style={{ animationDelay: "0.1s" }}
+                  ></div>
+                  <div
+                    className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"
+                    style={{ animationDelay: "0.2s" }}
+                  ></div>
                 </div>
-                <span className="text-sm text-gray-600 ml-2">Analyzing cricket data...</span>
+                <span className="text-sm text-gray-600 ml-2">
+                  Analyzing cricket data...
+                </span>
               </div>
             </div>
           </div>

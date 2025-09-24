@@ -29,7 +29,10 @@ export class AuthService {
   
   console.log("Token : ", token);
 
-  return { access_token: token };
+  // Include user object and default roles so the frontend receives `{ access_token, user, roles }`
+  const safeUser = { _id: user._id, email: user.email, name: user.name };
+  const roles = ['user'];
+  return { access_token: token, user: safeUser};
 }
 
 
