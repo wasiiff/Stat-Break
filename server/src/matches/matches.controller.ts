@@ -10,7 +10,7 @@ import { AuthGuard } from '@nestjs/passport';
 
 class AskDto {
   question: string;
-  conversationId?: string; // ✅ allow continuing a conversation
+  conversationId?: string;
   format?: 'test' | 'odi' | 't20' | 'all';
 }
 
@@ -22,7 +22,6 @@ export class MatchesController {
     private readonly conversationsService: ConversationsService,
   ) {}
 
-  // 🔒 Protected: ask a cricket-related question
   @Post('ask')
   async ask(@Body() body: AskDto, @Request() req: any) {
     if (!body?.question) {
@@ -34,7 +33,7 @@ export class MatchesController {
       return await this.matchesService.answerQuestion(
         body.question,
         userId,
-        body.conversationId, // ✅ pass conversationId if provided
+        body.conversationId,
         body.format,
       );
     } catch (err) {
@@ -46,14 +45,12 @@ export class MatchesController {
     }
   }
 
-  // 🔒 Protected: get all conversations for the user
   @Get('history')
   async listConversations(@Request() req: any, @Query('limit') limit?: number) {
     const userId = req.user?.userId || req.user?.sub;
     return this.conversationsService.listConversations(userId, limit);
   }
 
-  // 🔒 Protected: get a specific conversation with messages
   @Get('history/:conversationId')
   async getConversation(@Param('conversationId') conversationId: string, @Request() req: any) {
     const userId = req.user?.userId || req.user?.sub;
