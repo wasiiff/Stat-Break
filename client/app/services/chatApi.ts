@@ -7,28 +7,58 @@ export const chatApi = createApi({
   baseQuery: fetchBaseQuery({
     baseUrl: API_BASE,
     prepareHeaders: (headers, { getState }) => {
-      const token = (getState() as any).auth.token;
+      const token = (getState() as any).auth?.token;
       if (token) {
         headers.set("Authorization", `Bearer ${token}`);
       }
       return headers;
     },
   }),
+  tagTypes: ["Conversations", "Conversation", "Summary"],
   endpoints: (builder) => ({
     askQuestion: builder.mutation<
       any,
-      { question: string; format?: "test" | "odi" | "t20" | "all" }
+      {
+        question: string;
+        conversationId?: string;
+        format?: "test" | "odi" | "t20" | "all";
+      }
     >({
-      query: ({ question, format }) => ({
+      query: ({ question, conversationId, format }) => ({
         url: "/matches/ask",
         method: "POST",
-        body: { question, format },
+        body: { question, conversationId, format },
       }),
+      invalidatesTags: (result, error, { conversationId }) =>
+        conversationId
+          ? [{ type: "Conversation", id: conversationId }]
+          : [{ type: "Conversations" }],
     }),
-    getHistory: builder.query<any, string>({
-      query: (userId) => `/user/history/${userId}`,
+
+    listConversations: builder.query<any[], number | void>({
+      query: (limit = 20) => `/matches/history?limit=${limit}`,
+      providesTags: ["Conversations"],
+    }),
+
+    getConversation: builder.query<any, string>({
+      query: (conversationId) => `/matches/history/${conversationId}`,
+      providesTags: (result, error, conversationId) => [
+        { type: "Conversation", id: conversationId },
+      ],
+    }),
+
+    getConversationSummary: builder.query<any, string>({
+      query: (conversationId) => `/user/summary/${conversationId}`,
+      providesTags: (result, error, conversationId) => [
+        { type: "Summary", id: conversationId },
+      ],
     }),
   }),
 });
 
-export const { useAskQuestionMutation, useGetHistoryQuery } = chatApi;
+export const {
+  useAskQuestionMutation,
+  useListConversationsQuery,
+  useGetConversationQuery,
+  useGetConversationSummaryQuery,
+} = chatApi;

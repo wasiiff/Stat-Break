@@ -5,7 +5,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { Connection, Model } from 'mongoose';
+import { Connection, Model, Types } from 'mongoose';
 import { Match, MatchDocument } from './schemas/match.schema';
 import { GeminiService } from '../gemini/gemini.service';
 import { ConversationsService } from '../conversations/conversations.service';
@@ -34,10 +34,7 @@ Question: "${question}"
       const resp = await this.gemini.ask(prompt);
       return resp.toLowerCase().includes('true');
     } catch (err) {
-      this.logger.error(
-        'Gemini relevancy check failed, defaulting to false',
-        err,
-      );
+      this.logger.error('Gemini relevancy check failed, defaulting to false', err);
       return false;
     }
   }
@@ -47,22 +44,20 @@ Question: "${question}"
     const q = question.toLowerCase();
     if (q.includes('test')) return 'test';
     if (q.includes('odi')) return 'odi';
-    if (q.includes('t20') || q.includes('t 20') || q.includes('twenty20'))
-      return 't20';
+    if (q.includes('t20') || q.includes('t 20') || q.includes('twenty20')) return 't20';
     return null;
   }
 
-  // ---------- Node 2: Memory Retriever ----------
-  async retrieveMemory(userId: string): Promise<string | null> {
+  // ---------- Node 2: Memory Retriever (per conversation) ----------
+  async retrieveMemory(userId: string, conversationId: string): Promise<string | null> {
     try {
-      const summary = await this.convService.getSummary(userId);
+      const summary = await this.convService.getSummary(userId, conversationId);
       if (summary) return summary;
 
-      const recent = await this.convService.getRecent(userId, 1);
-      if (!recent || recent.length === 0) return null;
+      const conv = await this.convService.getConversation(userId, conversationId);
+      if (!conv || !conv.messages || conv.messages.length === 0) return null;
 
-      // take latest conversation's messages
-      const messages = recent[0].messages || [];
+      const messages = conv.messages;
       const text = messages
         .map((m) => `${m.role === 'user' ? 'Q' : 'A'}: ${m.text}`)
         .join('\n---\n');
@@ -72,7 +67,7 @@ Question: "${question}"
 Summarize the following recent conversation into 3 concise facts that are relevant for answering future cricket questions:
 ${text}
 Return only the short summary lines.
-      `.trim();
+        `.trim();
         try {
           return (await this.gemini.ask(prompt)).trim();
         } catch (err) {
@@ -131,23 +126,15 @@ Return ONLY valid JSON in this format:
 \`\`\`
 
 ## RULES
-- Match format → detect keywords ("test", "odi", "t20") else use formatHint or "all" if two or more formats are given use all.
-- Team/venue → case-insensitive regex (e.g. { "team": { "$regex": "India", "$options": "i" } }).
-- Dates → use startDate with $gte/$lte for years, ranges, or "recent".
-- Scores → **always wrap in $convert with onError:null, onNull:null**:
-  {
-    "$expr": {
-      "$gt": [
-        { "$convert": { "input": "$score", "to": "int", "onError": null, "onNull": null } },
-        200
-      ]
-    }
-  }
-- Results → regex (e.g. { "result": { "$regex": "^Won", "$options": "i" } }).
-- Rankings ("highest", "top" , "highest ever runs", "highest ever score" ) → sort desc + limit.
+- Match format → detect keywords ("test", "odi", "t20") else use formatHint or "all".
+- Team/venue → case-insensitive regex.
+- Dates → use startDate with $gte/$lte.
+- Scores → always wrap in $convert with onError:null, onNull:null.
+- Results → regex.
+- Rankings ("highest", "top") → sort desc + limit.
 - Recent/oldest → sort by startDate desc/asc + limit.
 - Head-to-head → $or with both team/opposition pairs.
-- Aggregations allowed in "agg" (group, avg, sum, max).
+- Aggregations allowed in "agg".
 - If unclear → default: collection:"all", filter:{}, sort:{startDate:-1}, limit:20.
 
 ## MEMORY
@@ -161,19 +148,11 @@ Generate only the JSON query.
 
     try {
       const resp = await this.gemini.ask(prompt);
-      const clean = resp
-        .replace(/```json/i, '')
-        .replace(/```/g, '')
-        .trim();
-
+      const clean = resp.replace(/```json/i, '').replace(/```/g, '').trim();
       const parsed = JSON.parse(clean);
 
       // Normalize
-      if (
-        !parsed.collection ||
-        parsed.collection === '' ||
-        parsed.collection === 'all'
-      ) {
+      if (!parsed.collection || parsed.collection === '' || parsed.collection === 'all') {
         parsed.collection = formatHint || 'all';
       }
       if (!parsed.filter) parsed.filter = {};
@@ -199,27 +178,16 @@ Generate only the JSON query.
   // ---------- Node 4: Query Executor ----------
   private async executeMongoQuery(genQuery: any) {
     const db = this.connection?.db;
-    if (!db) {
-      throw new Error('MongoDB connection is not initialized.');
-    }
+    if (!db) throw new Error('MongoDB connection is not initialized.');
 
     const results: any[] = [];
     const collections =
-      genQuery.collection === 'all'
-        ? ['test', 'odi', 't20']
-        : [genQuery.collection];
+      genQuery.collection === 'all' ? ['test', 'odi', 't20'] : [genQuery.collection];
 
     const applyRegex = (obj: any): any => {
       if (!obj) return obj;
-
-      if (typeof obj === 'string') {
-        return { $regex: obj, $options: 'i' };
-      }
-
-      if (Array.isArray(obj)) {
-        return obj.map(applyRegex);
-      }
-
+      if (typeof obj === 'string') return { $regex: obj, $options: 'i' };
+      if (Array.isArray(obj)) return obj.map(applyRegex);
       if (typeof obj === 'object' && obj !== null) {
         const newObj: any = {};
         for (const [k, v] of Object.entries(obj)) {
@@ -233,72 +201,46 @@ Generate only the JSON query.
         }
         return newObj;
       }
-
       return obj;
     };
 
     for (const col of collections) {
       const collection = db.collection(col);
 
-      // 🔹 Case 1: Aggregation explicitly requested
-      if (
-        genQuery.agg &&
-        Array.isArray(genQuery.agg) &&
-        genQuery.agg.length > 0
-      ) {
-        const pipeline = [
-          { $match: applyRegex(genQuery.filter) },
-          ...genQuery.agg,
-        ];
+      // Aggregation pipeline
+      if (genQuery.agg && Array.isArray(genQuery.agg) && genQuery.agg.length > 0) {
+        const pipeline = [{ $match: applyRegex(genQuery.filter) }, ...genQuery.agg];
         const docs = await collection.aggregate(pipeline).toArray();
         results.push(...docs.map((d) => ({ ...d, format: col })));
         continue;
       }
 
-      // 🔹 Case 2: Expression-based sort
+      // Expression-based sort
       const hasExprSort =
-        genQuery.sort &&
-        Object.values(genQuery.sort).some((v) => typeof v === 'object');
-
+        genQuery.sort && Object.values(genQuery.sort).some((v) => typeof v === 'object');
       if (hasExprSort) {
         const pipeline: any[] = [];
-
         if (genQuery.filter && Object.keys(genQuery.filter).length > 0) {
           pipeline.push({ $match: applyRegex(genQuery.filter) });
         }
-
         pipeline.push({ $addFields: { sortKey: genQuery.sort } });
         pipeline.push({ $sort: { sortKey: -1 } });
-
-        if (genQuery.limit) {
-          pipeline.push({ $limit: genQuery.limit });
-        }
-
-        if (
-          genQuery.projection &&
-          Object.keys(genQuery.projection).length > 0
-        ) {
+        if (genQuery.limit) pipeline.push({ $limit: genQuery.limit });
+        if (genQuery.projection && Object.keys(genQuery.projection).length > 0) {
           pipeline.push({ $project: genQuery.projection });
         }
-
         const docs = await collection.aggregate(pipeline).toArray();
         results.push(...docs.map((d) => ({ ...d, format: col })));
         continue;
       }
 
-      // 🔹 Case 3: Standard find query
+      // Standard find query
       const cursor = collection.find(applyRegex(genQuery.filter || {}));
-
       if (genQuery.projection && Object.keys(genQuery.projection).length > 0) {
         cursor.project(genQuery.projection);
       }
-      if (genQuery.sort) {
-        cursor.sort(genQuery.sort);
-      }
-      if (genQuery.limit) {
-        cursor.limit(genQuery.limit);
-      }
-
+      if (genQuery.sort) cursor.sort(genQuery.sort);
+      if (genQuery.limit) cursor.limit(genQuery.limit);
       const docs = await cursor.toArray();
       results.push(...docs.map((d) => ({ ...d, format: col })));
     }
@@ -310,12 +252,7 @@ Generate only the JSON query.
   async formatAnswer(
     question: string,
     rawResults: any[],
-  ): Promise<{
-    type: 'text' | 'table';
-    text?: string;
-    columns?: string[];
-    rows?: any[][];
-  }> {
+  ): Promise<{ type: 'text' | 'table'; text?: string; columns?: string[]; rows?: any[][] }> {
     if (!rawResults || rawResults.length === 0) {
       return { type: 'text', text: 'No matching records found.' };
     }
@@ -375,13 +312,16 @@ No markdown, no tables, just plain text.
     `.trim();
 
     const summary = await this.gemini.ask(summaryPrompt);
-
     return { type: 'table', columns, rows, text: summary.trim() };
   }
 
   // ---------- Node 6 & 7: Full workflow ----------
-  // ---------- Node 6 & 7: Full workflow ----------
-  async answerQuestion(question: string, userId: string, formatHint?: string) {
+  async answerQuestion(
+    question: string,
+    userId: string,
+    conversationId?: string,
+    formatHint?: string,
+  ) {
     const relevant = await this.relevancyCheck(question);
     if (!relevant) {
       return {
@@ -390,8 +330,17 @@ No markdown, no tables, just plain text.
       };
     }
 
-    // memory retrieval
-    const memory = await this.retrieveMemory(userId);
+    // 🔹 Use or create conversation
+    let convId = conversationId;
+    if (!convId) {
+      const conv = await this.convService.createConversation(userId, question);
+      convId = (conv._id as Types.ObjectId).toString();
+    } else {
+      await this.convService.addMessage(userId, convId, 'user', question);
+    }
+
+    // 🔹 Memory retrieval
+    const memory = await this.retrieveMemory(userId, convId);
 
     const detectedFormat = this.detectFormat(question) || formatHint;
     const genQuery = await this.generateMongoQuery(
@@ -404,20 +353,14 @@ No markdown, no tables, just plain text.
     const results = await this.executeMongoQuery(genQuery);
     const answer = await this.formatAnswer(question, results);
 
+    // 🔹 Save assistant’s answer
     try {
-      // 🔹 Save user question as a message
-      await this.convService.saveConversation(userId, 'user', question);
-
-      // 🔹 Save assistant answer (text or table)
       if (answer.type === 'text') {
-        await this.convService.saveConversation(
-          userId,
-          'assistant',
-          answer.text ?? 'No answer',
-        );
+        await this.convService.addMessage(userId, convId, 'assistant', answer.text ?? 'No answer');
       } else {
-        await this.convService.saveConversation(
+        await this.convService.addMessage(
           userId,
+          convId,
           'assistant',
           answer.text ?? 'Table response',
           answer.columns,
@@ -428,9 +371,8 @@ No markdown, no tables, just plain text.
       this.logger.error('Failed to save conversation', err);
     }
 
-    // return answer plus a short memory trace (id or summary)
-    const summary = await this.convService.getSummary(userId);
-
-    return { ...answer, memorySummary: summary || memory || null };
+    // 🔹 Return answer + memory trace
+    const summary = await this.convService.getSummary(userId, convId);
+    return { ...answer, memorySummary: summary || memory || null, conversationId: convId };
   }
 }

@@ -1,9 +1,8 @@
 /* eslint-disable prettier/prettier */
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Conversation, ConversationDocument } from './schemas/converstion.schema';
-import { Summary, SummaryDocument } from '../summarize/schemas/summary.schema';
 import { GeminiService } from '../gemini/gemini.service';
 
 @Injectable()
@@ -14,51 +13,56 @@ export class ConversationsService {
 
   constructor(
     @InjectModel(Conversation.name) private convModel: Model<ConversationDocument>,
-    @InjectModel(Summary.name) private summaryModel: Model<SummaryDocument>,
     private readonly gemini: GeminiService,
   ) {}
 
-  async getRecent(userId: string, limit = 50) {
-    return this.convModel
-      .find({ userId })
-      .sort({ updatedAt: -1 })
-      .limit(limit)
-      .lean()
-      .exec();
+  /**
+   * Create a new conversation with the first user message.
+   */
+  async createConversation(userId: string, firstMessage: string) {
+    const conv = new this.convModel({
+      userId,
+      title: firstMessage.slice(0, 50) || 'New Conversation',
+      messages: [{ role: 'user', text: firstMessage, timestamp: new Date() }],
+      updatedAt: new Date(),
+    });
+    await conv.save();
+    return conv;
   }
 
-  async saveConversation(
+  /**
+   * Add a new message to an existing conversation.
+   */
+  async addMessage(
     userId: string,
+    conversationId: string,
     role: 'user' | 'assistant',
     text: string,
     columns?: string[],
     rows?: string[][],
   ) {
-    let conv = await this.convModel
-      .findOne({ userId })
-      .sort({ updatedAt: -1 })
-      .exec();
+    const conv = await this.convModel.findOne({
+      _id: new Types.ObjectId(conversationId),
+      userId,
+    });
 
     if (!conv) {
-      conv = new this.convModel({ userId, messages: [] });
+      throw new Error('Conversation not found');
     }
 
     conv.messages.push({ role, text, columns, rows, timestamp: new Date() });
     conv.updatedAt = new Date();
     await conv.save();
 
-    await this.maybeSummarize(userId);
+    await this.maybeSummarize(conv);
     return conv;
   }
 
-  async maybeSummarize(userId: string) {
-    const conv = await this.convModel
-      .findOne({ userId })
-      .sort({ updatedAt: -1 })
-      .lean()
-      .exec();
-
-    if (!conv || !conv.messages || conv.messages.length < this.SUMMARY_THRESHOLD) {
+  /**
+   * Summarize the conversation if it has enough messages.
+   */
+  private async maybeSummarize(conv: ConversationDocument) {
+    if (!conv.messages || conv.messages.length < this.SUMMARY_THRESHOLD) {
       return;
     }
 
@@ -68,7 +72,7 @@ export class ConversationsService {
       .join('\n---\n');
 
     const prompt = `
-Summarize the following conversation into 4-6 short bullet points of key facts and preferences (very short).
+Summarize the following conversation into 4–6 very short bullet points of key facts and preferences.
 Conversation:
 ${blob}
 
@@ -77,18 +81,12 @@ Return only the short summary text.
 
     try {
       const summaryText = (await this.gemini.ask(prompt)).trim();
+      conv.contextSummary = summaryText;
+      await conv.save();
 
-      await this.summaryModel
-        .findOneAndUpdate(
-          { userId },
-          { summary: summaryText, updatedAt: new Date() },
-          { upsert: true },
-        )
-        .exec();
-
-      // prune old conversations
+      // prune old conversations (keep only MAX_ITEMS per user)
       const docs = await this.convModel
-        .find({ userId })
+        .find({ userId: conv.userId })
         .sort({ updatedAt: -1 })
         .limit(this.MAX_ITEMS)
         .select('_id')
@@ -96,14 +94,62 @@ Return only the short summary text.
         .exec();
 
       const idsToKeep = docs.map((d) => d._id);
-      await this.convModel.deleteMany({ userId, _id: { $nin: idsToKeep } }).exec();
+      await this.convModel.deleteMany({
+        userId: conv.userId,
+        _id: { $nin: idsToKeep },
+      });
     } catch (err) {
       this.logger.error('Failed to summarize conversation', err);
     }
   }
 
-  async getSummary(userId: string) {
-    const s = await this.summaryModel.findOne({ userId }).lean().exec();
-    return s ? s.summary : null;
+   /**
+   * List conversations for a user (summary view).
+   */
+  async listConversations(userId: string, limit = 50) {
+    return this.convModel
+      .find({ userId })
+      .sort({ updatedAt: -1 })
+      .limit(limit)
+      .select('_id title updatedAt contextSummary')
+      .lean()
+      .exec();
+  }
+
+  /**
+ * Get a single conversation with all messages.
+ */
+async getConversation(userId: string, conversationId: string) {
+  return this.convModel
+    .findOne({
+      _id: new Types.ObjectId(conversationId),
+      userId,
+    })
+    .lean()
+    .exec();
+}
+
+
+  /**
+   * Wrapper for listing user conversations.
+   */
+  async getUserConversations(userId: string, limit = 50) {
+    return this.listConversations(userId, limit);
+  }
+
+  /**
+   * Get only the stored summary for a conversation.
+   */
+  async getSummary(userId: string, conversationId: string) {
+    const conv = await this.convModel
+      .findOne({
+        _id: new Types.ObjectId(conversationId),
+        userId,
+      })
+      .select('contextSummary')
+      .lean()
+      .exec();
+
+    return conv?.contextSummary ?? null;
   }
 }

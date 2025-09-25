@@ -1,35 +1,40 @@
 /* eslint-disable prettier/prettier */
 /* eslint-disable @typescript-eslint/require-await */
-/* eslint-disable prettier/prettier */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
-/* eslint-disable prettier/prettier */
-import { Controller, Post, Body, UseGuards, Request, Get, Param } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Request, Get, Param, Query } from '@nestjs/common';
 import { MatchesService } from './matches.service';
+import { ConversationsService } from '../conversations/conversations.service';
 import { AuthGuard } from '@nestjs/passport';
 
 class AskDto {
   question: string;
+  conversationId?: string; // ✅ allow continuing a conversation
   format?: 'test' | 'odi' | 't20' | 'all';
 }
 
 @Controller('matches')
+@UseGuards(AuthGuard('jwt'))
 export class MatchesController {
-  constructor(private readonly matchesService: MatchesService) {}
+  constructor(
+    private readonly matchesService: MatchesService,
+    private readonly conversationsService: ConversationsService,
+  ) {}
 
-  // 🔒 Protected: ask a question
-  @UseGuards(AuthGuard('jwt'))
+  // 🔒 Protected: ask a cricket-related question
   @Post('ask')
   async ask(@Body() body: AskDto, @Request() req: any) {
     if (!body?.question) {
       return { error: 'question is required' };
     }
+
     try {
       const userId = req.user?.userId || req.user?.sub;
       return await this.matchesService.answerQuestion(
         body.question,
         userId,
+        body.conversationId, // ✅ pass conversationId if provided
         body.format,
       );
     } catch (err) {
@@ -41,15 +46,17 @@ export class MatchesController {
     }
   }
 
-  // 🔒 Protected: get user history
-  @UseGuards(AuthGuard('jwt'))
-  @Get('history/:userId')
-  async history(@Param('userId') userId: string, @Request() req: any) {
-    const requester = req.user;
-    if (requester.userId !== userId) {
-      return { error: 'forbidden' };
-    }
-    // TODO: plug in conversations service
-    return { error: 'not implemented' };
+  // 🔒 Protected: get all conversations for the user
+  @Get('history')
+  async listConversations(@Request() req: any, @Query('limit') limit?: number) {
+    const userId = req.user?.userId || req.user?.sub;
+    return this.conversationsService.listConversations(userId, limit);
+  }
+
+  // 🔒 Protected: get a specific conversation with messages
+  @Get('history/:conversationId')
+  async getConversation(@Param('conversationId') conversationId: string, @Request() req: any) {
+    const userId = req.user?.userId || req.user?.sub;
+    return this.conversationsService.getConversation(userId, conversationId);
   }
 }

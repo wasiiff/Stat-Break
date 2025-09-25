@@ -4,6 +4,7 @@ import { useSelector } from "react-redux";
 import { RootState } from "./store/store";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
+import GradientSpinner from "./components/Spinner";
 
 export default function Home() {
   const router = useRouter();
@@ -18,7 +19,7 @@ export default function Home() {
   if (!token) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50">
-        <p className="text-gray-600 text-lg">Redirecting to login...</p>
+        <p className="text-gray-600 text-lg"><GradientSpinner /></p>
       </div>
     );
   }

@@ -19,12 +19,15 @@ export const MessageSchema = SchemaFactory.createForClass(Message);
 export class Conversation {
   @Prop({ required: true }) userId: string;
 
-  // array of messages
-  // use explicit MessageSchema so mongoose treats messages as subdocuments
+  @Prop({ required: true }) title: string;
+
   @Prop({ type: [MessageSchema], default: [] })
   messages: Message[];
 
+  @Prop() contextSummary?: string;
+
   @Prop({ default: () => new Date() }) updatedAt?: Date;
 }
+
 
 export const ConversationSchema = SchemaFactory.createForClass(Conversation);
